@@ -205,7 +205,7 @@ Your LLM prompt is a **core deliverable** — we will read it carefully. It must
 - Be robust to the query topic — it should work equally well for `"best CRM software"` as for `"best AI writing tool for SEO"`
 - Include a concrete example of the expected output format in the prompt itself
 
-You may use any LLM. We recommend **Gemini 1.5 Flash** (free tier at [ai.google.dev](https://ai.google.dev)) or **OpenAI GPT-4o-mini**.
+You may use any LLM.
 
 > 💡 Think carefully about: How do you prevent the model from hallucinating extra fields? How do you handle the case where the model returns fewer than 10 sub-queries? How do you validate the JSON before returning it to the caller?
 
