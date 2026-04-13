@@ -3,11 +3,10 @@ uvicorn[standard]
 httpx
 beautifulsoup4
 spacy
-textstat
+textstat==0.7.3
 sentence-transformers
 torch
-google-generativeai
-openai
+google-genai
 pydantic>=2.0
 pytest
 pytest-asyncio
