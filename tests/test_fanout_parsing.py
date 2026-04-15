@@ -8,7 +8,7 @@ Tests the three layers of defense against LLM output issues:
 
 import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock
 
 from app.services.fanout_engine import (
     _extract_json,
@@ -156,56 +156,47 @@ class TestGenerateSubQueriesMocked:
     """Test the full generate flow with a mocked Gemini response."""
 
     async def test_successful_generation(self):
-        mock_response = MagicMock()
-        mock_response.text = _make_valid_response(2)
+        mock_call = AsyncMock(return_value=_make_valid_response(2))
 
-        mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = mock_response
+        with patch("app.services.fanout_engine._get_api_key", return_value="fake-key"), \
+             patch("app.services.fanout_engine._call_gemini", mock_call):
 
-        with patch("app.services.fanout_engine._get_client", return_value=mock_client):
             result, model_name = await generate_sub_queries("best CRM software")
 
             assert len(result) == 12
-            assert model_name == "gemini-1.5-flash"
+            assert model_name == "gemini-2.5-flash"
             # Verify all 6 types are represented
             result_types = {sq["type"] for sq in result}
             assert result_types == set(ALL_TYPES)
 
     async def test_retries_on_invalid_json(self):
         """First attempt returns garbage; second attempt succeeds."""
-        bad_response = MagicMock()
-        bad_response.text = "not valid json at all"
+        mock_call = AsyncMock(
+            side_effect=["not valid json at all", _make_valid_response(2)]
+        )
 
-        good_response = MagicMock()
-        good_response.text = _make_valid_response(2)
-
-        mock_client = MagicMock()
-        mock_client.models.generate_content.side_effect = [bad_response, good_response]
-
-        with patch("app.services.fanout_engine._get_client", return_value=mock_client), \
+        with patch("app.services.fanout_engine._get_api_key", return_value="fake-key"), \
+             patch("app.services.fanout_engine._call_gemini", mock_call), \
              patch("app.services.fanout_engine.asyncio.sleep", return_value=None):
 
             result, _ = await generate_sub_queries("test query")
             assert len(result) == 12
             # Verify it retried
-            assert mock_client.models.generate_content.call_count == 2
+            assert mock_call.call_count == 2
 
     async def test_all_retries_fail_raises_runtime_error(self):
         """If all 3 attempts fail, a RuntimeError should be raised."""
-        bad_response = MagicMock()
-        bad_response.text = "still not json"
+        mock_call = AsyncMock(return_value="still not json")
 
-        mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = bad_response
-
-        with patch("app.services.fanout_engine._get_client", return_value=mock_client), \
+        with patch("app.services.fanout_engine._get_api_key", return_value="fake-key"), \
+             patch("app.services.fanout_engine._call_gemini", mock_call), \
              patch("app.services.fanout_engine.asyncio.sleep", return_value=None):
 
             with pytest.raises(RuntimeError, match="failed after 3 retries"):
                 await generate_sub_queries("test query")
 
             # Verify all 3 attempts were made
-            assert mock_client.models.generate_content.call_count == 3
+            assert mock_call.call_count == 3
 
     async def test_missing_api_key_raises(self):
         """Should raise RuntimeError when GEMINI_API_KEY is not set."""

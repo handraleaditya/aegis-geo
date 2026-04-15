@@ -1,4 +1,9 @@
-"""Fan-out Engine — LLM prompt design, Gemini call, JSON parsing with retries."""
+"""Fan-out Engine — LLM prompt design, Gemini call, JSON parsing with retries.
+
+Calls the Gemini API to decompose a user query into 10-15 sub-queries
+across 6 search intent categories. Includes defensive JSON parsing,
+schema validation, and exponential backoff retry logic.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +13,15 @@ import re
 import logging
 import asyncio
 
-from google import genai
+import httpx
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-2.5-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0  # seconds
+LLM_TIMEOUT = 30.0  # seconds per API call
 
 VALID_TYPES = {
     "comparative",
@@ -79,8 +86,11 @@ def _build_prompt(target_query: str) -> str:
 # ── JSON parsing & validation ─────────────────────────────────────────────
 
 def _extract_json(text: str) -> dict:
-    """Extract JSON from the model's response, handling markdown fences."""
-    # Strip markdown code fences if present
+    """Extract JSON from the model's response, handling markdown fences.
+
+    LLMs sometimes wrap JSON in ```json ... ``` code fences despite being
+    told not to. This function strips fences before parsing.
+    """
     text = text.strip()
     fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence_match:
@@ -89,7 +99,11 @@ def _extract_json(text: str) -> dict:
 
 
 def _validate_sub_queries(data: dict) -> list[dict]:
-    """Validate and clean the parsed sub-queries, returning only valid ones."""
+    """Validate and clean the parsed sub-queries, returning only valid ones.
+
+    Filters out entries with unrecognized types or empty queries,
+    and strips any extra fields the LLM may have hallucinated.
+    """
     if "sub_queries" not in data:
         raise ValueError("Response missing 'sub_queries' key")
 
@@ -102,7 +116,7 @@ def _validate_sub_queries(data: dict) -> list[dict]:
         q_type = item.get("type", "")
         query = item.get("query", "")
         if q_type in VALID_TYPES and isinstance(query, str) and query.strip():
-            # Only keep the two expected fields
+            # Only keep the two expected fields — strip any extras
             validated.append({"type": q_type, "query": query.strip()})
 
     if len(validated) < 6:
@@ -114,33 +128,47 @@ def _validate_sub_queries(data: dict) -> list[dict]:
     return validated
 
 
-# ── Gemini call with retries ──────────────────────────────────────────────
+# ── Gemini API call with retries ──────────────────────────────────────────
 
-def _get_client() -> genai.Client:
+def _get_api_key() -> str:
+    """Retrieve the Gemini API key from the environment."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
-    return genai.Client(api_key=api_key)
+    return api_key
+
+
+async def _call_gemini(prompt: str, api_key: str) -> str:
+    """Make an async HTTP call to the Gemini REST API and return the text response.
+
+    Uses httpx for native async support, avoiding event loop issues
+    that can arise from wrapping synchronous SDK clients.
+    """
+    url = GEMINI_API_URL.format(model=MODEL_NAME)
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        resp = await client.post(url, params={"key": api_key}, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+    # Extract text from Gemini response structure
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 async def generate_sub_queries(target_query: str) -> tuple[list[dict], str]:
     """Call Gemini to generate sub-queries. Returns (sub_queries, model_name).
 
-    Retries up to MAX_RETRIES times with exponential backoff on failure.
-    Raises RuntimeError if all retries fail.
+    Retries up to MAX_RETRIES times with exponential backoff on parse/validation
+    failures or API errors. Raises RuntimeError if all retries fail.
     """
-    client = _get_client()
+    api_key = _get_api_key()
     prompt = _build_prompt(target_query)
     last_error = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=MODEL_NAME,
-                contents=prompt,
-            )
-            text = response.text
+            text = await _call_gemini(prompt, api_key)
             data = _extract_json(text)
             sub_queries = _validate_sub_queries(data)
             return sub_queries, MODEL_NAME

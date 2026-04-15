@@ -82,7 +82,7 @@ All checks extend a `BaseCheck` abstract class with a standard `.run()` interfac
 
 ### Feature 2 — Query Fan-Out Engine (Complete)
 
-- **LLM Integration:** Gemini 1.5 Flash via `google-genai` SDK.
+- **LLM Integration:** Gemini 2.5 Flash via direct REST API (httpx async client).
 - **Prompt Design:** Structured system prompt with explicit JSON schema, the 6 required sub-query types, a concrete example, and defensive instructions (no markdown, no extra fields).
 - **Retry Logic:** Exponential backoff (1s, 2s, 4s) across 3 attempts. Handles both JSON parse errors and API failures.
 - **Gap Analysis:** Sentence-level chunking + `all-MiniLM-L6-v2` embeddings with cosine similarity.
@@ -135,7 +135,8 @@ The threshold is configurable via the `SIMILARITY_THRESHOLD` constant in `gap_an
 
 Endpoints are `async` because:
 - URL fetching and LLM calls are I/O-bound — async lets us not block the event loop.
-- spaCy and sentence-transformers are CPU-bound, but they're fast enough per-request that wrapping in `asyncio.to_thread()` (used for the Gemini call) is sufficient. For high throughput, I'd move embedding computation to a background worker.
+- The Gemini integration uses httpx `AsyncClient` for native async HTTP calls, avoiding the event loop issues that arise from wrapping synchronous SDK clients with `asyncio.to_thread()`.
+- spaCy and sentence-transformers are CPU-bound, but they're fast enough per-request that they don't meaningfully block. For high throughput, I'd move embedding computation to a background worker.
 
 ---
 
@@ -185,4 +186,4 @@ Endpoints are `async` because:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes (for fan-out endpoint) | Google AI Studio API key for Gemini 1.5 Flash |
+| `GEMINI_API_KEY` | Yes (for fan-out endpoint) | Google AI Studio API key for Gemini 2.5 Flash |
